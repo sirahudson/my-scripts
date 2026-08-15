@@ -6,4 +6,5 @@
     "docker/cmd-prune.sh",
     "docker/cmd_stats.sh"
   ]
+  "install": "mkdir -p $PREFIX/bin && cp docker/cmd-prune.sh $PREFIX/bin/cmd-prune && cp docker/cmd_stats.sh $PREFIX/bin/cmd_stats && chmod +x $PREFIX/bin/cmd-prune $PREFIX/bin/cmd_stats"
 }
