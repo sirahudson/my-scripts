@@ -1,0 +1,7 @@
+{
+  "name": "my-scripts",
+  "version": "1.0.0",
+  "description": "Kumpulan script utilitas pribadi",
+  "global": true,
+  "install": "make install"
+}
