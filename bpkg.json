@@ -1,0 +1,9 @@
+{
+  "name": "my-scripts",
+  "version": "1.0.0",
+  "description": "Kumpulan script utilitas pribadi",
+  "scripts": [
+    "docker/cmd-prune.sh",
+    "docker/cmd_stats.sh"
+  ]
+}
