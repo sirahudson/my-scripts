@@ -1,0 +1,25 @@
+#!/bin/sh
+
+# Gunakan printf agar aman (menghindari koma/spasi error)
+{
+    echo "Kategori,Data"
+
+    printf 'Tanggal,"%s"\n' "$(date)"
+    #printf 'Uptime,"%s"\n' "$(uptime -p)"
+    printf 'Hostname,"%s"\n' "$(hostname)"
+    printf 'User,"%s"\n' "$(whoami)"
+
+    LOAD=$(uptime | awk -F'load average:' '{print $2}' | sed 's/,//g')
+    printf 'CPU Load 1m,"%s"\n' "$(echo "$LOAD" | awk '{print $1}')"
+    printf 'CPU Load 5m,"%s"\n' "$(echo "$LOAD" | awk '{print $2}')"
+    printf 'CPU Load 15m,"%s"\n' "$(echo "$LOAD" | awk '{print $3}')"
+
+    TOTAL=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+    USED=$(awk '/MemTotal/ {t=$2} /MemAvailable/ {a=$2} END {print t - a}' /proc/meminfo)
+    MEM=$(awk -v u="$USED" -v t="$TOTAL" 'BEGIN {printf "%.1f MiB / %.1f MiB", u/1024, t/1024}')
+    printf 'Memory Usage,"%s"\n' "$MEM"
+
+    DISK=$(df -h / | tail -1 | awk '{print $3 " used of " $2}')
+    printf 'Disk Usage,"%s"\n' "$DISK"
+
+} | csview

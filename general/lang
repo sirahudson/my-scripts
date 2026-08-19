@@ -1,0 +1,22 @@
+#!/bin/bash
+
+# Mendapatkan path menggunakan which untuk berbagai bahasa
+python_path=$(which python3 2>/dev/null || echo "not found")
+node_path=$(which node 2>/dev/null || echo "not found")
+java_path=$(which java 2>/dev/null || echo "not found")
+php_path=$(which php 2>/dev/null || echo "not found")
+ruby_path=$(which ruby 2>/dev/null || echo "not found")
+go_path=$(which go 2>/dev/null || echo "not found")
+
+# Header tabel dinamis berdasarkan sistem
+hostname=$(hostname)
+header="language,interpreter,location_$(echo $hostname | tr '[:upper:]' '[:lower:]'),pkg_manager,popular_framework"
+
+# Menampilkan tabel dengan header dinamis
+echo "$header
+python,python3,$python_path,pip,flask/tkinter
+javascript,node,$node_path,npm,preact/express
+java,java,$java_path,maven,-
+php,php,$php_path,composer,-
+ruby,ruby,$ruby_path,gem,-
+go,go,$go_path,go mod,gin/echo" | csview
