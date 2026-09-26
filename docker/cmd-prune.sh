@@ -57,16 +57,16 @@ do_prune() {
       cmd="docker image prune -a"
       ;;
     volume|volumes)
-      msg="Akan menghapus semua unused volumes."
-      cmd="docker volume prune"
+      msg="Akan menghapus semua unused volumes (termasuk named volume, bukan cuma anonymous)."
+      cmd="docker volume prune -a"
       ;;
     cache|builder|build-cache)
-      msg="Akan membersihkan Docker build cache."
-      cmd="docker builder prune -a"
+      msg="Akan membersihkan Docker build cache (legacy builder + semua buildx builder)."
+      cmd="docker builder prune -a && docker buildx prune -a"
       ;;
     all)
-      msg="Akan menghapus semua unused images, build cache, dan volumes."
-      cmd="docker image prune -a && docker builder prune -a && docker volume prune"
+      msg="Akan menghapus semua unused images, build cache (legacy + buildx), dan volumes (termasuk named volume yang unused)."
+      cmd="docker image prune -a && docker builder prune -a && docker buildx prune -a && docker volume prune -a"
       ;;
     *)
       printf "${RED}✘ Target tidak dikenal: %s${NC}\n" "$target" >&2
@@ -77,7 +77,10 @@ do_prune() {
 
   if [ "$force" = "-f" ] || [ "$force" = "--force" ]; then
     printf "${CYAN}➜ %s${NC}\n" "$msg"
-    eval "$cmd -f"
+    # Sisipkan -f setelah tiap subcommand "prune ..." (bukan cuma di akhir string),
+    # supaya semua command dalam chain "&&" (misal target 'all') ikut dapat flag force.
+    forced_cmd=$(printf '%s' "$cmd" | sed -E 's/(prune -a|prune)( &&|$)/\1 -f\2/g')
+    eval "$forced_cmd"
   else
     confirm "$msg"
     printf "${CYAN}➜ Menjalankan...${NC}\n"
