@@ -47,6 +47,15 @@ confirm() {
   esac
 }
 
+# [FIX 1] Deteksi dukungan flag --all pada volume prune.
+# Docker baru (>= 23.0) butuh --all untuk ikut menghapus named volume.
+# Docker lama tidak punya flag itu (prune sudah menghapus semua unused volume).
+if docker volume prune --help 2>&1 | grep -q -- '--all'; then
+  VOLUME_PRUNE="docker volume prune -a"
+else
+  VOLUME_PRUNE="docker volume prune"
+fi
+
 do_prune() {
   target="$1"
   force="$2"
@@ -58,7 +67,7 @@ do_prune() {
       ;;
     volume|volumes)
       msg="Akan menghapus semua unused volumes (termasuk named volume, bukan cuma anonymous)."
-      cmd="docker volume prune -a"
+      cmd="$VOLUME_PRUNE"   # [FIX 2]
       ;;
     cache|builder|build-cache)
       msg="Akan membersihkan Docker build cache (legacy builder + semua buildx builder)."
@@ -66,7 +75,7 @@ do_prune() {
       ;;
     all)
       msg="Akan menghapus semua unused images, build cache (legacy + buildx), dan volumes (termasuk named volume yang unused)."
-      cmd="docker image prune -a && docker builder prune -a && docker buildx prune -a && docker volume prune -a"
+      cmd="docker image prune -a && docker builder prune -a && docker buildx prune -a && $VOLUME_PRUNE"   # [FIX 3]
       ;;
     *)
       printf "${RED}✘ Target tidak dikenal: %s${NC}\n" "$target" >&2
