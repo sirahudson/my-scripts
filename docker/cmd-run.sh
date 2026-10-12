@@ -34,7 +34,8 @@ if [ -n "${COMPOSE_PROJECT_OVERRIDE:-}" ]; then
   PROJECT="$COMPOSE_PROJECT_OVERRIDE"
 else
   RAW_NAME="$(basename "$CURRENT_DIR")"
-  PROJECT="$(printf '%s' "$RAW_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g')"
+  PROJECT="$(printf '%s' "$RAW_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g; s/^[^a-z0-9]*//')"
+  [ -n "$PROJECT" ] || PROJECT="app"
 fi
 
 # ---- Deteksi file compose (nama standar saja) ----
@@ -119,6 +120,13 @@ ensure_docker() {
   $DOCKER info >/dev/null 2>&1 || die "Docker daemon tidak berjalan."
 }
 
+# Pastikan plugin 'docker compose' tersedia (dipanggil setelah akses Docker beres)
+ensure_compose() {
+  # shellcheck disable=SC2086
+  $DOCKER compose version >/dev/null 2>&1 \
+    || die "Plugin 'docker compose' belum terpasang (Alpine: apk add docker-cli-compose; repo resmi Docker di Debian: apt install docker-compose-plugin)."
+}
+
 # Perpanjang timestamp sudo sebelum langkah panjang (mis. setelah build)
 refresh_sudo() {
   if [ "$DOCKER" != "docker" ]; then
@@ -132,6 +140,10 @@ compose() {
 }
 
 run_bake() {
+  # shellcheck disable=SC2086
+  $DOCKER buildx version >/dev/null 2>&1 \
+    || die "Plugin 'docker buildx' belum terpasang (Alpine: apk add docker-cli-buildx; repo resmi Docker di Debian: apt install docker-buildx-plugin)."
+
   if [ "${BAKE_NO_NETWORK_HOST:-}" = "1" ]; then
     printf "${CYAN}🛠️  Mengeksekusi Docker Buildx Bake...${NC}\n"
     # shellcheck disable=SC2086
@@ -190,11 +202,20 @@ do_run() {
       ;;
     exec)
       [ $# -ge 1 ] || die "Usage: ./${SCRIPT_NAME} exec <service> [command]"
-      compose exec "$@"
+      # Tanpa terminal (pipe/CI), matikan alokasi TTY agar tidak error
+      if [ -t 0 ] && [ -t 1 ]; then
+        compose exec "$@"
+      else
+        compose exec -T "$@"
+      fi
       ;;
     run)
       [ $# -ge 1 ] || die "Usage: ./${SCRIPT_NAME} run <service> [command]"
-      compose run "$@"
+      if [ -t 0 ] && [ -t 1 ]; then
+        compose run "$@"
+      else
+        compose run -T "$@"
+      fi
       ;;
     *)
       # down, restart, ps, stop, start, dan perintah compose lainnya
@@ -274,4 +295,5 @@ if [ -z "$CMD" ]; then
 fi
 
 ensure_docker
+ensure_compose
 do_run "$CMD" "$@"

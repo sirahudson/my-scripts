@@ -1,91 +1,160 @@
 #!/usr/bin/env sh
 # logs — tail logs dari container service (auto-detect dari folder aktif/pwd)
-set -e
+#
+# Variabel opsional:
+#   COMPOSE_PROJECT_OVERRIDE  nama project (default: nama folder aktif)
+#   COMPOSE_FILE_OVERRIDE     file compose (default: deteksi otomatis)
+#   NO_COLOR=1                matikan warna
+set -eu
 
-GREEN='\033[1;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[1;36m'
-WHITE='\033[1;37m'
-RED='\033[0;31m'
-DIM='\033[2m'
-NC='\033[0m'
+# ---- Warna (dimatikan otomatis jika output bukan terminal) ----
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  GREEN='\033[1;32m'
+  YELLOW='\033[1;33m'
+  CYAN='\033[1;36m'
+  WHITE='\033[1;37m'
+  RED='\033[1;31m'
+  DIM='\033[2m'
+  NC='\033[0m'
+else
+  GREEN='' YELLOW='' CYAN='' WHITE='' RED='' DIM='' NC=''
+fi
 
-# ---- Deteksi folder aktif saat script dijalankan ----
+SCRIPT_NAME="$(basename "$0")"
 CURRENT_DIR="$(pwd)"
+
+die() {
+  printf "${RED}✘ %s${NC}\n" "$*" >&2
+  exit 1
+}
 
 # ---- Deteksi nama project dari folder aktif ----
 if [ -n "${COMPOSE_PROJECT_OVERRIDE:-}" ]; then
   PROJECT="$COMPOSE_PROJECT_OVERRIDE"
 else
   RAW_NAME="$(basename "$CURRENT_DIR")"
-  PROJECT="$(printf '%s' "$RAW_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g')"
+  PROJECT="$(printf '%s' "$RAW_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g; s/^[^a-z0-9]*//')"
+  [ -n "$PROJECT" ] || PROJECT="app"
 fi
 
-# ---- Deteksi file compose: cari .yml di folder aktif ----
+# ---- Deteksi file compose (nama standar saja) ----
+FILE=""
 if [ -n "${COMPOSE_FILE_OVERRIDE:-}" ]; then
   FILE="$COMPOSE_FILE_OVERRIDE"
 else
-  FILE="$(find "$CURRENT_DIR" -maxdepth 1 -name "*.yml" | sed "s|^$CURRENT_DIR/||" | sort | head -n 1)"
-
-  if [ -z "$FILE" ]; then
-    printf "${RED}✘ Tidak ditemukan file .yml di ${CURRENT_DIR}${NC}\n" >&2
-    exit 1
-  fi
+  for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+    if [ -f "${CURRENT_DIR}/${f}" ]; then
+      FILE="$f"
+      break
+    fi
+  done
 fi
 
-COMPOSE="docker compose -f ${FILE} -p ${PROJECT}"
+# ---- Akses Docker: langsung jika bisa, kalau tidak minta sudo dulu ----
+DOCKER="docker"
+
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 || die "docker tidak ditemukan di PATH."
+
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  command -v sudo >/dev/null 2>&1 || die "Docker tidak bisa diakses dan sudo tidak tersedia."
+
+  printf "${YELLOW}🔐 Butuh sudo untuk mengakses Docker.${NC}\n"
+  sudo -v || die "Autentikasi sudo gagal."
+  DOCKER="sudo docker"
+
+  # shellcheck disable=SC2086
+  $DOCKER info >/dev/null 2>&1 || die "Docker daemon tidak berjalan."
+}
+
+# Pastikan plugin 'docker compose' tersedia (dipanggil setelah akses Docker beres)
+ensure_compose() {
+  # shellcheck disable=SC2086
+  $DOCKER compose version >/dev/null 2>&1 \
+    || die "Plugin 'docker compose' belum terpasang (Alpine: apk add docker-cli-compose; repo resmi Docker di Debian: apt install docker-compose-plugin)."
+}
+
+compose() {
+  # shellcheck disable=SC2086
+  $DOCKER compose -f "$FILE" -p "$PROJECT" "$@"
+}
+
+SERVICES=""
 
 load_services() {
-  SERVICES=$($COMPOSE config --services 2>/dev/null)
-  if [ -z "$SERVICES" ]; then
-    printf "${RED}✘ Tidak ada service ditemukan. Cek %s${NC}\n" "$FILE" >&2
-    exit 1
-  fi
+  SERVICES="$(compose config --services 2>/dev/null)" || SERVICES=""
+  [ -n "$SERVICES" ] || die "Tidak ada service ditemukan. Cek ${FILE}"
 }
 
 usage() {
-  load_services
+  # Daftar service hanya ditampilkan jika Docker bisa diakses tanpa sudo,
+  # supaya 'help' tidak pernah meminta password.
+  services_text="  (tidak tersedia: Docker tidak bisa diakses tanpa sudo atau file compose tidak ada)"
+  if [ -n "$FILE" ] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    svc_list="$(compose config --services 2>/dev/null)" || svc_list=""
+    if [ -n "$svc_list" ]; then
+      services_text="$(printf '%s\n' "$svc_list" | sed 's/^/  /')"
+    fi
+  fi
+
   cat <<EOF
 Usage:
-  ./cmd_logs [info|help|-h|--help]
-  ./cmd_logs <service> [args...]
-  ./cmd_logs                    (mode pilih interaktif)
+  ./${SCRIPT_NAME} [info|help|-h|--help]
+  ./${SCRIPT_NAME} <service> [args...]
+  ./${SCRIPT_NAME}                    (mode pilih interaktif)
+
+Nama service harus menjadi argumen pertama. Argumen lain diteruskan ke
+'docker compose logs'. Khusus '-n N' diterjemahkan menjadi '--tail N'.
+Tanpa '-f', log ditampilkan lalu selesai (tidak follow).
 
 Terdeteksi otomatis:
   Project : ${PROJECT}
-  File    : ${FILE}
+  File    : ${FILE:-"(tidak ditemukan)"}
   Dir     : ${CURRENT_DIR}
 
+Akses Docker:
+  Jika user tidak bisa mengakses Docker langsung, skrip meminta password sudo
+  satu kali di awal lalu memakai 'sudo docker'. Jalankan sebagai user biasa,
+  jangan dengan 'sudo ./${SCRIPT_NAME}'.
+
 Override manual (opsional):
-  COMPOSE_PROJECT_OVERRIDE=nama ./cmd_logs
-  COMPOSE_FILE_OVERRIDE=file.yml ./cmd_logs
+  COMPOSE_PROJECT_OVERRIDE=nama ./${SCRIPT_NAME}
+  COMPOSE_FILE_OVERRIDE=file.yml ./${SCRIPT_NAME}
 
 Services:
-$(echo "$SERVICES" | sed 's/^/  /')
+${services_text}
 
 Examples:
-  ./cmd_logs nginx
-  ./cmd_logs app --tail 50
-  ./cmd_logs db -f
+  ./${SCRIPT_NAME} nginx
+  ./${SCRIPT_NAME} app --tail 50
+  ./${SCRIPT_NAME} app -n 50
+  ./${SCRIPT_NAME} db -f
 EOF
 }
+
+SERVICE=""
+TAIL_N=""
 
 pilih_service() {
   load_services
 
-  printf "${CYAN}Project: ${WHITE}${PROJECT}${NC} ${DIM}(${FILE})${NC}\n"
+  printf "${CYAN}Project: ${WHITE}%s${NC} ${DIM}(%s)${NC}\n" "$PROJECT" "$FILE"
   printf "${CYAN}Pilih service (logs):${NC}\n"
 
   i=1
   for svc in $SERVICES; do
     printf "  ${GREEN}%2d)${NC} %s\n" "$i" "$svc"
-    i=$((i+1))
+    i=$((i + 1))
   done
   total=$i
   printf "  ${YELLOW}%2d)${NC} Keluar\n" "$total"
 
   printf "${DIM}#? ${NC}"
-  read -r pilihan
+  pilihan=""
+  read -r pilihan || true
 
   if [ -z "$pilihan" ] || [ "$pilihan" = "$total" ]; then
     printf "${YELLOW}Dibatalkan.${NC}\n"
@@ -93,37 +162,52 @@ pilih_service() {
   fi
 
   case "$pilihan" in
-    ''|*[!0-9]*)
-      printf "${RED}Input tidak valid.${NC}\n"
-      exit 1
-      ;;
+    ''|*[!0-9]*) die "Input tidak valid." ;;
   esac
 
   i=1
   for svc in $SERVICES; do
-    [ "$i" = "$pilihan" ] && SERVICE="$svc" && break
-    i=$((i+1))
+    if [ "$i" = "$pilihan" ]; then
+      SERVICE="$svc"
+      break
+    fi
+    i=$((i + 1))
   done
 
-  if [ -z "$SERVICE" ]; then
-    printf "${RED}Pilihan tidak valid.${NC}\n"
-    exit 1
-  fi
+  [ -n "$SERVICE" ] || die "Pilihan tidak valid."
 
   printf "${DIM}Tail berapa baris (kosong = follow -f):${NC} "
-  read -r TAIL_N
+  read -r TAIL_N || true
+
+  case "$TAIL_N" in
+    *[!0-9]*) die "Jumlah baris harus angka: ${TAIL_N}" ;;
+  esac
 
   printf "${GREEN}✔${NC} Menampilkan log ${WHITE}%s${NC}\n" "$SERVICE"
 }
 
-# ---- Argumen info/help ----
-if [ "${1:-}" = "info" ] || [ "${1:-}" = "help" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  usage
-  exit 0
+# ---- Argumen info/help (tidak butuh Docker maupun sudo) ----
+case "${1:-}" in
+  info|help|-h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+[ -n "$FILE" ] || die "Tidak ditemukan file compose di ${CURRENT_DIR} (compose.yaml, compose.yml, docker-compose.yaml, docker-compose.yml)."
+
+# 'shift' hanya dipanggil kalau ada argumen (dash menghentikan skrip jika tidak)
+if [ $# -gt 0 ]; then
+  SERVICE="$1"
+  shift
 fi
 
-SERVICE="${1:-}"
-shift || true
+case "$SERVICE" in
+  -*) die "Nama service harus menjadi argumen pertama (contoh: ./${SCRIPT_NAME} app -n 50)." ;;
+esac
+
+ensure_docker
+ensure_compose
 
 # ---- Mode interaktif kalau tanpa argumen ----
 if [ -z "$SERVICE" ]; then
@@ -135,20 +219,27 @@ if [ -z "$SERVICE" ]; then
   fi
 fi
 
-# ---- Parsing argumen (mode manual) ----
-ARGS=""
-while [ $# -gt 0 ]; do
-  case "$1" in
+# ---- Terjemahkan '-n N' menjadi '--tail N' tanpa memecah argumen ----
+n=$#
+while [ "$n" -gt 0 ]; do
+  arg="$1"
+  shift
+  n=$((n - 1))
+  case "$arg" in
     -n)
-      ARGS="${ARGS} --tail ${2}"
-      shift 2
+      [ "$n" -gt 0 ] || die "Opsi -n butuh angka. Contoh: -n 50"
+      val="$1"
+      shift
+      n=$((n - 1))
+      case "$val" in
+        ''|*[!0-9]*) die "Nilai -n harus angka: ${val}" ;;
+      esac
+      set -- "$@" --tail "$val"
       ;;
     *)
-      ARGS="${ARGS} $1"
-      shift
+      set -- "$@" "$arg"
       ;;
   esac
 done
 
-# shellcheck disable=SC2086
-$COMPOSE logs $ARGS "$SERVICE"
+compose logs "$@" "$SERVICE"

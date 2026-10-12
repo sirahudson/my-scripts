@@ -1,43 +1,121 @@
 #!/usr/bin/env sh
 # prune — membersihkan Docker images, build cache, dan volumes yang tidak terpakai
-set -e
+#
+# Variabel opsional:
+#   NO_COLOR=1   matikan warna
+set -eu
 
-GREEN='\033[1;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[1;36m'
-WHITE='\033[1;37m'
-RED='\033[1;31m'
-DIM='\033[2m'
-NC='\033[0m'
+# ---- Warna (dimatikan otomatis jika output bukan terminal) ----
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  GREEN='\033[1;32m'
+  YELLOW='\033[1;33m'
+  CYAN='\033[1;36m'
+  WHITE='\033[1;37m'
+  RED='\033[1;31m'
+  DIM='\033[2m'
+  NC='\033[0m'
+else
+  GREEN='' YELLOW='' CYAN='' WHITE='' RED='' DIM='' NC=''
+fi
+
+SCRIPT_NAME="$(basename "$0")"
+
+die() {
+  printf "${RED}✘ %s${NC}\n" "$*" >&2
+  exit 1
+}
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage:
-  ./cmd_prune [info|help|-h|--help]
-  ./cmd_prune <image|volume|cache|all> [-f|--force]
-  ./cmd_prune                    (mode pilih interaktif)
+  ./${SCRIPT_NAME} [info|help|-h|--help]
+  ./${SCRIPT_NAME} <image|volume|cache|all> [-f|--force]
+  ./${SCRIPT_NAME}                    (mode pilih interaktif)
 
 Targets:
   image|images    hapus unused images
-  volume|volumes  hapus unused volumes
+  volume|volumes  hapus unused volumes (termasuk named volume, DATA IKUT HILANG)
   cache|builder   hapus Docker build cache
   all             hapus images, cache, dan volumes
 
 Options:
   -f, --force     skip konfirmasi
 
+Akses Docker:
+  Jika user tidak bisa mengakses Docker langsung, skrip meminta password sudo
+  satu kali di awal lalu memakai 'sudo docker'. Jalankan sebagai user biasa,
+  jangan dengan 'sudo ./${SCRIPT_NAME}'.
+
 Examples:
-  ./cmd_prune image -f
-  ./cmd_prune cache --force
-  ./cmd_prune all -f
+  ./${SCRIPT_NAME} image -f
+  ./${SCRIPT_NAME} cache --force
+  ./${SCRIPT_NAME} all -f
 EOF
 }
 
-# confirm "pesan" -> return 0 kalau user setuju, exit kalau tidak
+# ---- Akses Docker: langsung jika bisa, kalau tidak minta sudo dulu ----
+DOCKER="docker"
+
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 || die "docker tidak ditemukan di PATH."
+
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  command -v sudo >/dev/null 2>&1 || die "Docker tidak bisa diakses dan sudo tidak tersedia."
+
+  printf "${YELLOW}🔐 Butuh sudo untuk mengakses Docker.${NC}\n"
+  sudo -v || die "Autentikasi sudo gagal."
+  DOCKER="sudo docker"
+
+  # shellcheck disable=SC2086
+  $DOCKER info >/dev/null 2>&1 || die "Docker daemon tidak berjalan."
+}
+
+dk() {
+  # shellcheck disable=SC2086
+  $DOCKER "$@"
+}
+
+# Docker >= 23.0 butuh 'volume prune --all' agar named volume ikut dihapus.
+# Docker lama tidak punya flag itu (prune sudah menghapus semua unused volume).
+VOLUME_ALL=0
+detect_volume_all() {
+  if dk volume prune --help 2>&1 | grep -q -- '--all'; then
+    VOLUME_ALL=1
+  fi
+}
+
+# Semua langkah dipanggil dengan -f: konfirmasi sudah ditangani skrip ini
+# (lewat --force atau pertanyaan y/N), jadi Docker tidak bertanya lagi.
+prune_images() {
+  dk image prune -a -f
+}
+
+prune_cache() {
+  dk builder prune -a -f
+  if dk buildx version >/dev/null 2>&1; then
+    dk buildx prune -a -f
+  else
+    printf "${YELLOW}⚠ Plugin buildx tidak terpasang, langkah 'buildx prune' dilewati.${NC}\n"
+  fi
+}
+
+prune_volumes() {
+  if [ "$VOLUME_ALL" = "1" ]; then
+    dk volume prune -a -f
+  else
+    dk volume prune -f
+  fi
+}
+
+# confirm "pesan" -> return 0 kalau user setuju, keluar kalau tidak
 confirm() {
   printf "${YELLOW}⚠ %s${NC}\n" "$1"
   printf "${DIM}Lanjutkan? [y/N]${NC} "
-  read -r jawaban
+  jawaban=""
+  read -r jawaban || true
   case "$jawaban" in
     y|Y) return 0 ;;
     *)
@@ -47,57 +125,57 @@ confirm() {
   esac
 }
 
-# [FIX 1] Deteksi dukungan flag --all pada volume prune.
-# Docker baru (>= 23.0) butuh --all untuk ikut menghapus named volume.
-# Docker lama tidak punya flag itu (prune sudah menghapus semua unused volume).
-if docker volume prune --help 2>&1 | grep -q -- '--all'; then
-  VOLUME_PRUNE="docker volume prune -a"
-else
-  VOLUME_PRUNE="docker volume prune"
-fi
+MSG=""
+STEPS=""
 
-do_prune() {
-  target="$1"
-  force="$2"
-
-  case "$target" in
+# Validasi target sebelum menyentuh Docker (tidak memicu prompt sudo untuk typo)
+resolve_target() {
+  case "$1" in
     image|images)
-      msg="Akan menghapus semua unused images (termasuk dangling & unreferenced)."
-      cmd="docker image prune -a"
+      MSG="Akan menghapus semua unused images (termasuk dangling & unreferenced)."
+      STEPS="images"
       ;;
     volume|volumes)
-      msg="Akan menghapus semua unused volumes (termasuk named volume, bukan cuma anonymous)."
-      cmd="$VOLUME_PRUNE"   # [FIX 2]
+      MSG="Akan menghapus semua unused volumes (termasuk named volume, bukan cuma anonymous). Data di dalamnya tidak bisa dikembalikan."
+      STEPS="volumes"
       ;;
     cache|builder|build-cache)
-      msg="Akan membersihkan Docker build cache (legacy builder + semua buildx builder)."
-      cmd="docker builder prune -a && docker buildx prune -a"
+      MSG="Akan membersihkan Docker build cache (builder bawaan + builder buildx yang sedang aktif)."
+      STEPS="cache"
       ;;
     all)
-      msg="Akan menghapus semua unused images, build cache (legacy + buildx), dan volumes (termasuk named volume yang unused)."
-      cmd="docker image prune -a && docker builder prune -a && docker buildx prune -a && $VOLUME_PRUNE"   # [FIX 3]
+      MSG="Akan menghapus semua unused images, build cache, dan volumes (termasuk named volume yang unused). Data volume tidak bisa dikembalikan."
+      STEPS="images cache volumes"
       ;;
     *)
-      printf "${RED}✘ Target tidak dikenal: %s${NC}\n" "$target" >&2
-      usage
+      printf "${RED}✘ Target tidak dikenal: %s${NC}\n" "$1" >&2
+      usage >&2
       exit 1
       ;;
   esac
+}
 
-  if [ "$force" = "-f" ] || [ "$force" = "--force" ]; then
-    printf "${CYAN}➜ %s${NC}\n" "$msg"
-    # Sisipkan -f setelah tiap subcommand "prune ..." (bukan cuma di akhir string),
-    # supaya semua command dalam chain "&&" (misal target 'all') ikut dapat flag force.
-    forced_cmd=$(printf '%s' "$cmd" | sed -E 's/(prune -a|prune)( &&|$)/\1 -f\2/g')
-    eval "$forced_cmd"
+do_prune() {
+  if [ "$FORCE" = "1" ]; then
+    printf "${CYAN}➜ %s${NC}\n" "$MSG"
   else
-    confirm "$msg"
+    confirm "$MSG"
     printf "${CYAN}➜ Menjalankan...${NC}\n"
-    eval "$cmd"
   fi
 
-  printf "${GREEN}✔ Selesai membersihkan '%s'${NC}\n" "$target"
+  for step in $STEPS; do
+    case "$step" in
+      images)  prune_images ;;
+      cache)   prune_cache ;;
+      volumes) prune_volumes ;;
+    esac
+  done
+
+  printf "${GREEN}✔ Selesai membersihkan '%s'${NC}\n" "$TARGET"
 }
+
+TARGET=""
+FORCE=0
 
 pilih_target() {
   printf "${CYAN}Pilih target prune:${NC}\n"
@@ -108,7 +186,8 @@ pilih_target() {
   printf "  ${YELLOW} 5)${NC} Keluar\n"
 
   printf "${DIM}#? ${NC}"
-  read -r pilihan
+  pilihan=""
+  read -r pilihan || true
 
   case "$pilihan" in
     1) TARGET="image" ;;
@@ -120,24 +199,37 @@ pilih_target() {
       exit 0
       ;;
     *)
-      printf "${RED}Pilihan tidak valid.${NC}\n"
-      exit 1
+      die "Pilihan tidak valid."
       ;;
   esac
 }
 
-# ---- Argumen info/help ----
-if [ "${1:-}" = "info" ] || [ "${1:-}" = "help" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  usage
-  exit 0
-fi
+# ---- Argumen info/help (tidak butuh Docker maupun sudo) ----
+case "${1:-}" in
+  info|help|-h|--help)
+    usage
+    exit 0
+    ;;
+esac
 
-TARGET="${1:-}"
-FORCE="${2:-}"
+# ---- Parsing argumen: target dan -f/--force dalam urutan apa pun ----
+for arg in "$@"; do
+  case "$arg" in
+    -f|--force) FORCE=1 ;;
+    -*) die "Opsi tidak dikenal: ${arg}" ;;
+    *)
+      [ -z "$TARGET" ] || die "Terlalu banyak target: '${TARGET}' dan '${arg}'. Pilih salah satu."
+      TARGET="$arg"
+      ;;
+  esac
+done
 
-# ---- Mode interaktif kalau tanpa argumen ----
+# ---- Mode interaktif kalau tanpa target ----
 if [ -z "$TARGET" ]; then
   pilih_target
 fi
 
-do_prune "$TARGET" "$FORCE"
+resolve_target "$TARGET"
+ensure_docker
+detect_volume_all
+do_prune
