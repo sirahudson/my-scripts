@@ -9,31 +9,56 @@ if [ "$(id -u)" -eq 0 ]; then
     install_prefix="/usr/local"
 fi
 
-if command -v apk >/dev/null 2>&1; then
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+run_root() {
     if [ "$(id -u)" -eq 0 ]; then
-        apk add bash curl git coreutils make
-    elif command -v doas >/dev/null 2>&1; then
-        doas apk add bash curl git coreutils make
-    elif command -v sudo >/dev/null 2>&1; then
-        sudo apk add bash curl git coreutils make
+        "$@"
+    elif have doas; then
+        doas "$@"
+    elif have sudo; then
+        sudo "$@"
     else
         echo "Error: pasang dependency dengan doas atau sudo." >&2
         exit 1
     fi
+}
+
+# Cek dependency yang belum terpasang
+missing=""
+for cmd in bash curl git make; do
+    have "$cmd" || missing="${missing} ${cmd}"
+done
+
+if [ -n "${missing}" ]; then
+    echo "Memasang dependency:${missing}"
+    # shellcheck disable=SC2086
+    set -- ${missing}
+    if have apk; then
+        run_root apk add "$@" coreutils
+    elif have apt-get; then
+        run_root apt-get update
+        run_root apt-get install -y "$@"
+    else
+        echo "Error: package manager tidak dikenali. Pasang manual:${missing}" >&2
+        exit 1
+    fi
 fi
 
-if ! command -v bash >/dev/null 2>&1; then
-    echo "Error: bash belum terpasang." >&2
-    exit 1
-fi
+# Pastikan semuanya benar-benar tersedia
+for cmd in bash curl git make; do
+    if ! have "$cmd"; then
+        echo "Error: ${cmd} belum terpasang." >&2
+        exit 1
+    fi
+done
 
-if ! command -v curl >/dev/null 2>&1; then
-    echo "Error: curl belum terpasang." >&2
-    exit 1
-fi
+mkdir -p "${install_prefix}/bin"
 
-if ! command -v bpkg >/dev/null 2>&1; then
-    curl -Lo- https://get.bpkg.sh | bash
+if ! have bpkg; then
+    curl -fsSL https://get.bpkg.sh | PREFIX="${install_prefix}" bash
 fi
 
 case ":${PATH}:" in
