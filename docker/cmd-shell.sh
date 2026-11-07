@@ -33,7 +33,8 @@ if [ -n "${COMPOSE_PROJECT_OVERRIDE:-}" ]; then
   PROJECT="$COMPOSE_PROJECT_OVERRIDE"
 else
   RAW_NAME="$(basename "$CURRENT_DIR")"
-  PROJECT="$(printf '%s' "$RAW_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g')"
+  PROJECT="$(printf '%s' "$RAW_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g; s/^[^a-z0-9]*//')"
+  [ -n "$PROJECT" ] || PROJECT="app"
 fi
 
 # ---- Deteksi file compose (nama standar saja) ----
@@ -67,6 +68,13 @@ ensure_docker() {
 
   # shellcheck disable=SC2086
   $DOCKER info >/dev/null 2>&1 || die "Docker daemon tidak berjalan."
+}
+
+# Pastikan plugin Compose tersedia setelah akses Docker terverifikasi.
+ensure_compose() {
+  # shellcheck disable=SC2086
+  $DOCKER compose version >/dev/null 2>&1 \
+    || die "Plugin 'docker compose' belum terpasang."
 }
 
 compose() {
@@ -189,6 +197,7 @@ if [ $# -gt 0 ]; then
 fi
 
 ensure_docker
+ensure_compose
 
 if [ -z "$SERVICE" ]; then
   pilih_service

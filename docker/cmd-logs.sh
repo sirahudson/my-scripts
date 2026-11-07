@@ -137,6 +137,7 @@ EOF
 
 SERVICE=""
 TAIL_N=""
+TAIL_SET=0
 
 pilih_service() {
   load_services
@@ -180,8 +181,10 @@ pilih_service() {
   read -r TAIL_N || true
 
   case "$TAIL_N" in
+    '') ;;
     *[!0-9]*) die "Jumlah baris harus angka: ${TAIL_N}" ;;
   esac
+  [ -z "$TAIL_N" ] || TAIL_SET=1
 
   printf "${GREEN}✔${NC} Menampilkan log ${WHITE}%s${NC}\n" "$SERVICE"
 }
@@ -212,7 +215,7 @@ ensure_compose
 # ---- Mode interaktif kalau tanpa argumen ----
 if [ -z "$SERVICE" ]; then
   pilih_service
-  if [ -n "$TAIL_N" ]; then
+  if [ "$TAIL_SET" = "1" ]; then
     set -- --tail "$TAIL_N"
   else
     set -- -f

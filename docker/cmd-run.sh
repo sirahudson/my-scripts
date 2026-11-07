@@ -4,7 +4,6 @@
 # Variabel opsional:
 #   COMPOSE_PROJECT_OVERRIDE  nama project (default: nama folder aktif)
 #   COMPOSE_FILE_OVERRIDE     file compose (default: deteksi otomatis)
-#   BAKE_NO_NETWORK_HOST=1    jangan pakai --allow network.host saat bake
 #   NO_COLOR=1                matikan warna
 set -eu
 
@@ -144,14 +143,27 @@ run_bake() {
   $DOCKER buildx version >/dev/null 2>&1 \
     || die "Plugin 'docker buildx' belum terpasang (Alpine: apk add docker-cli-buildx; repo resmi Docker di Debian: apt install docker-buildx-plugin)."
 
-  if [ "${BAKE_NO_NETWORK_HOST:-}" = "1" ]; then
-    printf "${CYAN}🛠️  Mengeksekusi Docker Buildx Bake...${NC}\n"
+  # UI builds depend on Verdaccio through the dedicated Buildx builder/network.
+  # Do not silently fall back to whichever builder happens to be active.
+  # shellcheck disable=SC2086
+  $DOCKER buildx inspect registry-builder >/dev/null 2>&1 \
+    || die "Builder Buildx 'registry-builder' tidak tersedia. Jalankan setup-networks.sh terlebih dahulu."
+
+  allow_network_host=false
+  for bake_file in "${CURRENT_DIR}/docker-bake.hcl" "${CURRENT_DIR}/docker-bake.json"; do
+    if [ -f "$bake_file" ] && grep -q 'network.host' "$bake_file"; then
+      allow_network_host=true
+      break
+    fi
+  done
+
+  printf "${CYAN}🛠️  Mengeksekusi Docker Buildx Bake dengan builder registry-builder...${NC}\n"
+  if [ "$allow_network_host" = "true" ]; then
     # shellcheck disable=SC2086
-    $DOCKER buildx bake --load "$@"
+    $DOCKER buildx bake --builder registry-builder --allow network.host --load "$@"
   else
-    printf "${CYAN}🛠️  Mengeksekusi Docker Buildx Bake (--allow network.host)...${NC}\n"
     # shellcheck disable=SC2086
-    $DOCKER buildx bake --allow network.host --load "$@"
+    $DOCKER buildx bake --builder registry-builder --load "$@"
   fi
 }
 
@@ -163,18 +175,23 @@ do_run() {
 
   case "$cmd" in
     up)
-      # Pisahkan --build dari argumen lain tanpa memecah argumen berspasi
+      # --build dapat muncul di mana saja; jangan sampai memotong argumen lain
+      # seperti service name, --no-start, atau flags Compose lainnya.
       force_build=false
-      n=$#
-      while [ "$n" -gt 0 ]; do
+      arg_count=$#
+      processed=0
+      while [ "$processed" -lt "$arg_count" ]; do
         arg="$1"
         shift
-        n=$((n - 1))
-        if [ "$arg" = "--build" ]; then
-          force_build=true
-        else
-          set -- "$@" "$arg"
-        fi
+        case "$arg" in
+          --build)
+            force_build=true
+            ;;
+          *)
+            set -- "$@" "$arg"
+            ;;
+        esac
+        processed=$((processed + 1))
       done
 
       if [ "$force_build" = "true" ]; then

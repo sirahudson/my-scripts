@@ -78,8 +78,7 @@ dk() {
   $DOCKER "$@"
 }
 
-# Docker >= 23.0 butuh 'volume prune --all' agar named volume ikut dihapus.
-# Docker lama tidak punya flag itu (prune sudah menghapus semua unused volume).
+# Docker only removes unused named volumes when `volume prune --all` is supported.
 VOLUME_ALL=0
 detect_volume_all() {
   if dk volume prune --help 2>&1 | grep -q -- '--all'; then
@@ -106,6 +105,7 @@ prune_volumes() {
   if [ "$VOLUME_ALL" = "1" ]; then
     dk volume prune -a -f
   else
+    printf "${YELLOW}⚠ Docker ini tidak mendukung --all; hanya anonymous volumes yang dapat dibersihkan.${NC}\n"
     dk volume prune -f
   fi
 }
@@ -232,4 +232,14 @@ fi
 resolve_target "$TARGET"
 ensure_docker
 detect_volume_all
+if [ "$VOLUME_ALL" = "0" ]; then
+  case "$TARGET" in
+    volume|volumes)
+      MSG="Docker ini hanya dapat menghapus unused anonymous volumes; named volumes tidak akan ikut terhapus."
+      ;;
+    all)
+      MSG="Akan menghapus unused images dan build cache; Docker ini hanya dapat menghapus anonymous volumes. Data volume tidak bisa dikembalikan."
+      ;;
+  esac
+fi
 do_prune

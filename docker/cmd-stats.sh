@@ -1,5 +1,5 @@
 #!/bin/sh
-# dockerhost-stats.sh (v4 - interactive + secure state)
+# cmd-stats.sh (interactive + secure state)
 # Monitoring CPU %, Memory (RSS), Network I/O, dan Block I/O container Docker
 # langsung dari host via /proc - tidak bergantung cgroup.
 #
@@ -7,12 +7,12 @@
 #   apk add procps util-linux
 #
 # Pemakaian:
-#   ./dockerhost-stats.sh                 -> mode pilih interaktif
-#   ./dockerhost-stats.sh all             -> semua container, sekali jalan
-#   ./dockerhost-stats.sh all --watch     -> semua container, live refresh 2s
-#   ./dockerhost-stats.sh all --watch 5   -> semua container, live refresh 5s
-#   ./dockerhost-stats.sh <nama>          -> container tertentu, sekali jalan
-#   ./dockerhost-stats.sh <nama> --watch  -> container tertentu, live refresh
+#   ./cmd-stats.sh                 -> mode pilih interaktif
+#   ./cmd-stats.sh all             -> semua container, sekali jalan
+#   ./cmd-stats.sh all --watch     -> semua container, live refresh 2s
+#   ./cmd-stats.sh all --watch 5   -> semua container, live refresh 5s
+#   ./cmd-stats.sh <nama>          -> container tertentu, sekali jalan
+#   ./cmd-stats.sh <nama> --watch  -> container tertentu, live refresh
 
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -26,6 +26,17 @@ NC='\033[0m'
 STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 STATE_FILE="${STATE_DIR}/.dockerhost_stats_state.$(id -u)"
 umask 077
+
+if [ -z "${NO_COLOR:-}" ] && [ -t 1 ]; then
+  :
+else
+  GREEN='' YELLOW='' CYAN='' WHITE='' RED='' DIM='' NC=''
+fi
+
+state_value() {
+  [ -r "$STATE_FILE" ] || return 0
+  awk -F= -v key="$1" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$STATE_FILE"
+}
 
 human_bytes() {
   b=$1
@@ -43,14 +54,14 @@ human_bytes() {
 usage() {
   cat <<'EOF'
 Usage:
-  ./dockerhost-stats.sh                    (mode pilih interaktif)
-  ./dockerhost-stats.sh all [--watch [N]]
-  ./dockerhost-stats.sh <container> [--watch [N]]
+  ./cmd-stats.sh                    (mode pilih interaktif)
+  ./cmd-stats.sh all [--watch [N]]
+  ./cmd-stats.sh <container> [--watch [N]]
 
 Examples:
-  ./dockerhost-stats.sh all
-  ./dockerhost-stats.sh all --watch 5
-  ./dockerhost-stats.sh myapp-container --watch
+  ./cmd-stats.sh all
+  ./cmd-stats.sh all --watch 5
+  ./cmd-stats.sh myapp-container --watch
 EOF
 }
 
@@ -67,14 +78,12 @@ pilih_container() {
   printf "  ${GREEN} 0)${NC} ${WHITE}all${NC}      ${DIM}— monitor semua container${NC}\n"
 
   i=1
-  echo "$names" | while IFS= read -r name; do
+  for name in $names; do
     printf "  ${GREEN}%2d)${NC} %s\n" "$i" "$name"
-    i=$((i+1))
-  done > /tmp/.dhs_menu.$$ 2>/dev/null
-  cat /tmp/.dhs_menu.$$
-  rm -f /tmp/.dhs_menu.$$
+    i=$((i + 1))
+  done
 
-  total=$(echo "$names" | wc -l)
+  total=$((i - 1))
   keluar=$((total + 1))
   printf "  ${YELLOW}%2d)${NC} Keluar\n" "$keluar"
 
@@ -110,6 +119,10 @@ if [ "${1:-}" = "info" ] || [ "${1:-}" = "help" ] || [ "${1:-}" = "-h" ] || [ "$
   exit 0
 fi
 
+command -v docker >/dev/null 2>&1 || { printf "${RED}✘ docker tidak ditemukan di PATH.${NC}\n" >&2; exit 1; }
+command -v nproc >/dev/null 2>&1 || { printf "${RED}✘ nproc tidak ditemukan (install coreutils).${NC}\n" >&2; exit 1; }
+command -v nsenter >/dev/null 2>&1 || { printf "${RED}✘ nsenter tidak ditemukan (install util-linux).${NC}" >&2; exit 1; }
+
 TARGET="${1:-}"
 shift || true
 
@@ -117,13 +130,26 @@ shift || true
 if [ -z "$TARGET" ]; then
   pilih_container
   if [ -n "$WATCH_SEC" ]; then
+    case "$WATCH_SEC" in
+      *[!0-9]*|'') printf "${RED}Interval harus berupa angka positif.${NC}\n"; exit 1 ;;
+      0) printf "${RED}Interval harus lebih besar dari 0.${NC}\n"; exit 1 ;;
+    esac
     exec watch -n "$WATCH_SEC" -t "$0" "$TARGET"
   fi
 else
   # ---- Mode manual: cek --watch ----
   if [ "${1:-}" = "--watch" ]; then
     WATCH_INTERVAL="${2:-2}"
+    case "$WATCH_INTERVAL" in
+      *[!0-9]*|'') printf "${RED}Interval harus berupa angka positif.${NC}\n"; exit 1 ;;
+      0) printf "${RED}Interval harus lebih besar dari 0.${NC}\n"; exit 1 ;;
+    esac
+    [ "$#" -le 2 ] || { printf "${RED}Penggunaan: $0 <container|all> --watch [detik]${NC}\n"; exit 1; }
     exec watch -n "$WATCH_INTERVAL" -t "$0" "$TARGET"
+  elif [ "$#" -gt 0 ]; then
+    printf "${RED}Argumen tidak dikenal: %s${NC}\n" "$1"
+    usage >&2
+    exit 1
   fi
 fi
 
@@ -149,20 +175,35 @@ fi
 now_ts=$(date +%s)
 total_now=$(awk '/^cpu /{for(i=2;i<=8;i++)sum+=$i; print sum}' /proc/stat)
 
-if [ -f "$STATE_FILE" ]; then
-  . "$STATE_FILE" 2>/dev/null
-fi
-
-prev_total=${prev_total_cpu:-$total_now}
-elapsed=$((now_ts - ${prev_ts:-now_ts}))
+prev_total=$(state_value prev_total_cpu)
+prev_ts=$(state_value prev_ts)
+case "$prev_total" in ''|*[!0-9]*) prev_total=$total_now ;; esac
+case "$prev_ts" in ''|*[!0-9]*) prev_ts=$now_ts ;; esac
+elapsed=$((now_ts - prev_ts))
 [ "$elapsed" -le 0 ] && elapsed=1
 total_delta=$((total_now - prev_total))
 
 printf "\n${WHITE}%-22s %-8s %-14s %-18s %-18s${NC}\n" "CONTAINER" "CPU %" "MEM (RSS)" "NET I/O (rx/tx)" "BLOCK I/O (r/w /${elapsed}s)"
 printf "${DIM}%-22s %-8s %-14s %-18s %-18s${NC}\n" "----------------------" "--------" "--------------" "------------------" "------------------"
 
-TMP_STATE="/tmp/.dhs_state.$$"
-: > "$TMP_STATE"
+if [ ! -d "$STATE_DIR" ]; then
+  printf "${RED}✘ Direktori state tidak tersedia: %s${NC}\n" "$STATE_DIR" >&2
+  exit 1
+fi
+
+TMP_STATE=$(mktemp "${STATE_DIR}/.dhs_state.XXXXXX") || {
+  printf "${RED}✘ Tidak dapat membuat file state sementara di %s.${NC}\n" "$STATE_DIR" >&2
+  exit 1
+}
+TMP_NEXT=""
+cleanup() {
+  rm -f "$TMP_STATE"
+  if [ -n "$TMP_NEXT" ]; then
+    rm -f "$TMP_NEXT"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 echo "$pairs" | while IFS=':' read -r name pid; do
   [ -z "$pid" ] && continue
@@ -174,8 +215,8 @@ echo "$pairs" | while IFS=':' read -r name pid; do
 
   cpu_now=$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null)
   cpu_now=${cpu_now:-0}
-  varname="prev_cpu_$pid"
-  eval "cpu_prev=\${$varname:-$cpu_now}"
+  cpu_prev=$(state_value "prev_cpu_$pid")
+  case "$cpu_prev" in ''|*[!0-9]*) cpu_prev=$cpu_now ;; esac
   cpu_delta=$((cpu_now - cpu_prev))
   [ "$cpu_delta" -lt 0 ] && cpu_delta=0
 
@@ -205,9 +246,10 @@ echo "$pairs" | while IFS=':' read -r name pid; do
   fi
   rx_now=${rx_now:-0}; tx_now=${tx_now:-0}
 
-  rxvar="prev_rx_$pid"; txvar="prev_tx_$pid"
-  eval "rx_prev=\${$rxvar:-$rx_now}"
-  eval "tx_prev=\${$txvar:-$tx_now}"
+  rx_prev=$(state_value "prev_rx_$pid")
+  tx_prev=$(state_value "prev_tx_$pid")
+  case "$rx_prev" in ''|*[!0-9]*) rx_prev=$rx_now ;; esac
+  case "$tx_prev" in ''|*[!0-9]*) tx_prev=$tx_now ;; esac
   rx_delta=$((rx_now - rx_prev))
   tx_delta=$((tx_now - tx_prev))
   [ "$rx_delta" -lt 0 ] && rx_delta=0
@@ -228,9 +270,10 @@ echo "$pairs" | while IFS=':' read -r name pid; do
   done
   rb_now=${rb_now:-0}; wb_now=${wb_now:-0}
 
-  rbvar="prev_rb_$pid"; wbvar="prev_wb_$pid"
-  eval "rb_prev=\${$rbvar:-$rb_now}"
-  eval "wb_prev=\${$wbvar:-$wb_now}"
+  rb_prev=$(state_value "prev_rb_$pid")
+  wb_prev=$(state_value "prev_wb_$pid")
+  case "$rb_prev" in ''|*[!0-9]*) rb_prev=$rb_now ;; esac
+  case "$wb_prev" in ''|*[!0-9]*) wb_prev=$wb_now ;; esac
   rb_delta=$((rb_now - rb_prev))
   wb_delta=$((wb_now - wb_prev))
   [ "$rb_delta" -lt 0 ] && rb_delta=0
@@ -247,9 +290,13 @@ prev_tx_$pid=$tx_now" >> "$TMP_STATE"
 done
 
 # rebuild state file dari nol tiap run -> mencegah numpuk pid lama (fix cleanup issue)
+TMP_NEXT=$(mktemp "${STATE_DIR}/.dhs_state_next.XXXXXX") || {
+  printf "${RED}✘ Tidak dapat membuat file state sementara di %s.${NC}\n" "$STATE_DIR" >&2
+  exit 1
+}
 {
   echo "prev_ts=$now_ts"
   echo "prev_total_cpu=$total_now"
   cat "$TMP_STATE"
-} > "$STATE_FILE"
-rm -f "$TMP_STATE"
+} > "$TMP_NEXT"
+mv -f "$TMP_NEXT" "$STATE_FILE"
