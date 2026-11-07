@@ -42,9 +42,8 @@ Options:
   -f, --force     skip konfirmasi
 
 Akses Docker:
-  Jika user tidak bisa mengakses Docker langsung, skrip meminta password sudo
-  satu kali di awal lalu memakai 'sudo docker'. Jalankan sebagai user biasa,
-  jangan dengan 'sudo ./${SCRIPT_NAME}'.
+  Jika user tidak bisa mengakses Docker langsung, skrip memakai sudo atau doas.
+  Jalankan sebagai user biasa, jangan dengan 'sudo ./${SCRIPT_NAME}'.
 
 Examples:
   ./${SCRIPT_NAME} image -f
@@ -53,8 +52,16 @@ Examples:
 EOF
 }
 
-# ---- Akses Docker: langsung jika bisa, kalau tidak minta sudo dulu ----
-DOCKER="docker"
+# ---- Akses Docker: langsung jika bisa, kalau tidak gunakan sudo/doas ----
+DOCKER_PRIVILEGE=""
+
+docker_cmd() {
+  if [ -n "$DOCKER_PRIVILEGE" ]; then
+    "$DOCKER_PRIVILEGE" docker "$@"
+  else
+    docker "$@"
+  fi
+}
 
 ensure_docker() {
   command -v docker >/dev/null 2>&1 || die "docker tidak ditemukan di PATH."
@@ -63,19 +70,22 @@ ensure_docker() {
     return 0
   fi
 
-  command -v sudo >/dev/null 2>&1 || die "Docker tidak bisa diakses dan sudo tidak tersedia."
+  if command -v sudo >/dev/null 2>&1; then
+    printf "${YELLOW}🔐 Butuh sudo untuk mengakses Docker.${NC}\n"
+    sudo -v || die "Autentikasi sudo gagal."
+    DOCKER_PRIVILEGE="sudo"
+  elif command -v doas >/dev/null 2>&1; then
+    printf "${YELLOW}🔐 Butuh doas untuk mengakses Docker.${NC}\n"
+    DOCKER_PRIVILEGE="doas"
+  else
+    die "Docker tidak bisa diakses; sudo maupun doas tidak tersedia."
+  fi
 
-  printf "${YELLOW}🔐 Butuh sudo untuk mengakses Docker.${NC}\n"
-  sudo -v || die "Autentikasi sudo gagal."
-  DOCKER="sudo docker"
-
-  # shellcheck disable=SC2086
-  $DOCKER info >/dev/null 2>&1 || die "Docker daemon tidak berjalan."
+  docker_cmd info >/dev/null 2>&1 || die "Docker daemon tidak berjalan atau akses ditolak."
 }
 
 dk() {
-  # shellcheck disable=SC2086
-  $DOCKER "$@"
+  docker_cmd "$@"
 }
 
 # Docker only removes unused named volumes when `volume prune --all` is supported.

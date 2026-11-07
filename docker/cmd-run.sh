@@ -70,8 +70,7 @@ Terdeteksi otomatis:
   Bake    : ${HAS_BAKE}
 
 Akses Docker:
-  Jika user tidak bisa mengakses Docker langsung, skrip meminta password sudo
-  satu kali di awal lalu menjalankan semua perintah dengan 'sudo docker'.
+  Jika user tidak bisa mengakses Docker langsung, skrip memakai sudo atau doas.
   Jalankan skrip sebagai user biasa, jangan dengan 'sudo ./${SCRIPT_NAME}'.
 
 Commands:
@@ -99,8 +98,16 @@ Examples:
 EOF
 }
 
-# ---- Akses Docker: langsung jika bisa, kalau tidak minta sudo dulu ----
-DOCKER="docker"
+# ---- Akses Docker: langsung jika bisa, kalau tidak gunakan sudo/doas ----
+DOCKER_PRIVILEGE=""
+
+docker_cmd() {
+  if [ -n "$DOCKER_PRIVILEGE" ]; then
+    "$DOCKER_PRIVILEGE" docker "$@"
+  else
+    docker "$@"
+  fi
+}
 
 ensure_docker() {
   command -v docker >/dev/null 2>&1 || die "docker tidak ditemukan di PATH."
@@ -109,44 +116,45 @@ ensure_docker() {
     return 0
   fi
 
-  command -v sudo >/dev/null 2>&1 || die "Docker tidak bisa diakses dan sudo tidak tersedia."
+  if command -v sudo >/dev/null 2>&1; then
+    printf "${YELLOW}🔐 Butuh sudo untuk mengakses Docker.${NC}\n"
+    sudo -v || die "Autentikasi sudo gagal."
+    DOCKER_PRIVILEGE="sudo"
+  elif command -v doas >/dev/null 2>&1; then
+    printf "${YELLOW}🔐 Butuh doas untuk mengakses Docker.${NC}\n"
+    DOCKER_PRIVILEGE="doas"
+  else
+    die "Docker tidak bisa diakses; sudo maupun doas tidak tersedia."
+  fi
 
-  printf "${YELLOW}🔐 Butuh sudo untuk mengakses Docker.${NC}\n"
-  sudo -v || die "Autentikasi sudo gagal."
-  DOCKER="sudo docker"
-
-  # shellcheck disable=SC2086
-  $DOCKER info >/dev/null 2>&1 || die "Docker daemon tidak berjalan."
+  docker_cmd info >/dev/null 2>&1 || die "Docker daemon tidak berjalan atau akses ditolak."
 }
 
 # Pastikan plugin 'docker compose' tersedia (dipanggil setelah akses Docker beres)
 ensure_compose() {
   # shellcheck disable=SC2086
-  $DOCKER compose version >/dev/null 2>&1 \
-    || die "Plugin 'docker compose' belum terpasang (Alpine: apk add docker-cli-compose; repo resmi Docker di Debian: apt install docker-compose-plugin)."
+  docker_cmd compose version >/dev/null 2>&1 \
+    || die "Plugin 'docker compose' v2 belum terpasang (Alpine: apk add docker-cli-compose; repo resmi Docker di Debian/Ubuntu: apt install docker-compose-plugin)."
 }
 
 # Perpanjang timestamp sudo sebelum langkah panjang (mis. setelah build)
 refresh_sudo() {
-  if [ "$DOCKER" != "docker" ]; then
+  if [ "$DOCKER_PRIVILEGE" = "sudo" ]; then
     sudo -v || die "Autentikasi sudo gagal."
   fi
 }
 
 compose() {
-  # shellcheck disable=SC2086
-  $DOCKER compose -f "$FILE" -p "$PROJECT" "$@"
+  docker_cmd compose -f "$FILE" -p "$PROJECT" "$@"
 }
 
 run_bake() {
-  # shellcheck disable=SC2086
-  $DOCKER buildx version >/dev/null 2>&1 \
-    || die "Plugin 'docker buildx' belum terpasang (Alpine: apk add docker-cli-buildx; repo resmi Docker di Debian: apt install docker-buildx-plugin)."
+  docker_cmd buildx version >/dev/null 2>&1 \
+    || die "Plugin 'docker buildx' belum terpasang (Alpine: apk add docker-cli-buildx; repo resmi Docker di Debian/Ubuntu: apt install docker-buildx-plugin)."
 
   # UI builds depend on Verdaccio through the dedicated Buildx builder/network.
   # Do not silently fall back to whichever builder happens to be active.
-  # shellcheck disable=SC2086
-  $DOCKER buildx inspect registry-builder >/dev/null 2>&1 \
+  docker_cmd buildx inspect registry-builder >/dev/null 2>&1 \
     || die "Builder Buildx 'registry-builder' tidak tersedia. Jalankan setup-networks.sh terlebih dahulu."
 
   allow_network_host=false
@@ -159,11 +167,9 @@ run_bake() {
 
   printf "${CYAN}🛠️  Mengeksekusi Docker Buildx Bake dengan builder registry-builder...${NC}\n"
   if [ "$allow_network_host" = "true" ]; then
-    # shellcheck disable=SC2086
-    $DOCKER buildx bake --builder registry-builder --allow network.host --load "$@"
+    docker_cmd buildx bake --builder registry-builder --allow network.host --load "$@"
   else
-    # shellcheck disable=SC2086
-    $DOCKER buildx bake --builder registry-builder --load "$@"
+    docker_cmd buildx bake --builder registry-builder --load "$@"
   fi
 }
 

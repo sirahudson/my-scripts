@@ -51,9 +51,33 @@ cmd-run  cmd-logs  cmd-shell  cmd-stats  cmd-prune
 
 ## Dependency runtime
 
-Docker Engine/Desktop dan Docker Compose v2 diperlukan untuk command `cmd-*`. `cmd-stats` juga membutuhkan `procps`, `util-linux`, dan `watch`.
+Semua command `cmd-*` memerlukan Docker yang berjalan dan dapat diakses oleh user, serta Docker Compose v2. Jika akses langsung ke Docker tidak tersedia, command selain `cmd-stats` dapat memakai `sudo` atau `doas`; `cmd-stats` memerlukan akses langsung ke Docker. Jangan menjalankan command dengan `sudo cmd-...`, karena konfigurasi Compose dan file state dapat berbeda untuk root.
 
-Install Docker sesuai environment Alpine, lalu pastikan ini berhasil:
+Di Alpine, Compose v2 tersedia melalui `docker-cli-compose`. Di Debian/Ubuntu, gunakan `docker-compose-plugin` dari repo resmi Docker atau paket Compose v2 yang disediakan distro.
+
+`cmd-run` memakai Docker Buildx saat project berisi `docker-bake.hcl`/`docker-bake.json` dan menjalankan build. Paket Buildx opsional untuk penggunaan Compose biasa:
+
+```sh
+# Repo resmi Docker di Debian/Ubuntu
+sudo apt install docker-buildx-plugin
+
+# Alpine
+apk add docker-cli-buildx
+```
+
+`cmd-stats` membutuhkan `procps` (`ps`, serta `watch` untuk mode `--watch`), `coreutils` (`nproc`), dan `util-linux` (`nsenter`). Script ini menggunakan `/bin/sh` dan `/proc`, sehingga berjalan pada distro Linux dengan paket tersebut.
+
+Install dependency `cmd-stats`:
+
+```sh
+# Debian/Ubuntu
+sudo apt install procps coreutils util-linux
+
+# Alpine
+apk add procps coreutils util-linux
+```
+
+Pastikan Docker dan Compose tersedia, lalu cek:
 
 ```sh
 docker version
@@ -61,6 +85,8 @@ docker compose version
 ```
 
 `general/lang` dan `general/monitor` membutuhkan `csview`.
+
+**Perhatian:** `cmd-prune volume` dan `cmd-prune all` dapat menghapus named volume yang tidak sedang digunakan, termasuk datanya. Periksa konfirmasi yang ditampilkan; `-f`/`--force` melewati konfirmasi.
 
 ## Pemakaian
 

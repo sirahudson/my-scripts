@@ -3,8 +3,9 @@
 # Monitoring CPU %, Memory (RSS), Network I/O, dan Block I/O container Docker
 # langsung dari host via /proc - tidak bergantung cgroup.
 #
-# Requirement: procps (ps), util-linux (nsenter)
-#   apk add procps util-linux
+# Requirement: procps (ps; watch for --watch), coreutils (nproc), util-linux (nsenter)
+#   Debian/Ubuntu: apt install procps coreutils util-linux
+#   Alpine:        apk add procps coreutils util-linux
 #
 # Pemakaian:
 #   ./cmd-stats.sh                 -> mode pilih interaktif
@@ -122,9 +123,22 @@ fi
 command -v docker >/dev/null 2>&1 || { printf "${RED}✘ docker tidak ditemukan di PATH.${NC}\n" >&2; exit 1; }
 command -v nproc >/dev/null 2>&1 || { printf "${RED}✘ nproc tidak ditemukan (install coreutils).${NC}\n" >&2; exit 1; }
 command -v nsenter >/dev/null 2>&1 || { printf "${RED}✘ nsenter tidak ditemukan (install util-linux).${NC}" >&2; exit 1; }
+ps --ppid "$$" -o rss= >/dev/null 2>&1 || {
+  printf "${RED}✘ ps tidak mendukung --ppid; install procps (Debian/Ubuntu: apt install procps; Alpine: apk add procps).${NC}\n" >&2
+  exit 1
+}
+
+require_watch() {
+  command -v watch >/dev/null 2>&1 || {
+    printf "${RED}✘ watch tidak ditemukan; install procps (Debian/Ubuntu: apt install procps; Alpine: apk add procps).${NC}\n" >&2
+    exit 1
+  }
+}
 
 TARGET="${1:-}"
-shift || true
+if [ "$#" -gt 0 ]; then
+  shift
+fi
 
 # ---- Mode interaktif kalau tanpa argumen ----
 if [ -z "$TARGET" ]; then
@@ -134,6 +148,7 @@ if [ -z "$TARGET" ]; then
       *[!0-9]*|'') printf "${RED}Interval harus berupa angka positif.${NC}\n"; exit 1 ;;
       0) printf "${RED}Interval harus lebih besar dari 0.${NC}\n"; exit 1 ;;
     esac
+    require_watch
     exec watch -n "$WATCH_SEC" -t "$0" "$TARGET"
   fi
 else
@@ -145,6 +160,7 @@ else
       0) printf "${RED}Interval harus lebih besar dari 0.${NC}\n"; exit 1 ;;
     esac
     [ "$#" -le 2 ] || { printf "${RED}Penggunaan: $0 <container|all> --watch [detik]${NC}\n"; exit 1; }
+    require_watch
     exec watch -n "$WATCH_INTERVAL" -t "$0" "$TARGET"
   elif [ "$#" -gt 0 ]; then
     printf "${RED}Argumen tidak dikenal: %s${NC}\n" "$1"
