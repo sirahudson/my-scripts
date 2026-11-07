@@ -51,7 +51,7 @@ cmd-run  cmd-logs  cmd-shell  cmd-stats  cmd-prune
 
 ## Dependency runtime
 
-Semua command `cmd-*` memerlukan Docker yang berjalan dan dapat diakses oleh user, serta Docker Compose v2. Jika akses langsung ke Docker tidak tersedia, command selain `cmd-stats` dapat memakai `sudo` atau `doas`; `cmd-stats` memerlukan akses langsung ke Docker. Jangan menjalankan command dengan `sudo cmd-...`, karena konfigurasi Compose dan file state dapat berbeda untuk root.
+Semua command `cmd-*` memerlukan Docker yang berjalan dan dapat diakses oleh user; command Compose juga memerlukan Docker Compose v2. Jika akses langsung ke Docker tidak tersedia, command dapat mencoba memakai `sudo` atau `doas`. `cmd-stats` akan menjalankan ulang dirinya dengan hak akses tersebut agar dapat membaca metrik proses host. Jangan menjalankan command dengan `sudo cmd-...`; biarkan command meminta eskalasi bila diperlukan.
 
 Di Alpine, Compose v2 tersedia melalui `docker-cli-compose`. Di Debian/Ubuntu, gunakan `docker-compose-plugin` dari repo resmi Docker atau paket Compose v2 yang disediakan distro.
 

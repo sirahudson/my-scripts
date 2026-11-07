@@ -68,10 +68,15 @@ EOF
 
 # pilih_container -> isi variabel global TARGET ("all" atau nama container spesifik)
 pilih_container() {
-  names=$(docker ps --format '{{.Names}}' 2>/dev/null)
+  names=$(docker ps --format '{{.Names}}' 2>&1)
+  docker_status=$?
+  if [ "$docker_status" -ne 0 ]; then
+    printf "${RED}✘ Gagal mengambil daftar container dari Docker:${NC}\n%s\n" "$names" >&2
+    exit "$docker_status"
+  fi
 
   if [ -z "$names" ]; then
-    printf "${RED}✘ Tidak ada container yang jalan.${NC}\n"
+    printf "${YELLOW}Tidak ada container yang sedang berjalan. Jalankan container terlebih dahulu.${NC}\n"
     exit 1
   fi
 
@@ -135,6 +140,43 @@ require_watch() {
   }
 }
 
+ensure_docker_access() {
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [ "$(id -u)" -eq 0 ]; then
+    printf "${RED}✘ Docker tidak dapat diakses atau daemon tidak berjalan. Periksa output 'docker info'.${NC}\n" >&2
+    docker info >&2
+    exit 1
+  fi
+
+  case "$0" in
+    /*) script_path=$0 ;;
+    */*) script_path=$PWD/$0 ;;
+    *) script_path=$(command -v "$0") ;;
+  esac
+  [ -n "$script_path" ] || {
+    printf "${RED}✘ Tidak dapat menentukan lokasi script untuk menjalankan ulang dengan hak akses Docker.${NC}\n" >&2
+    exit 1
+  }
+
+  if command -v sudo >/dev/null 2>&1; then
+    printf "${YELLOW}🔐 Docker tidak dapat diakses langsung; mencoba menjalankan cmd-stats dengan sudo.${NC}\n"
+    sudo -v || { printf "${RED}✘ Autentikasi sudo gagal.${NC}\n" >&2; exit 1; }
+    exec sudo "$script_path" "$@"
+  elif command -v doas >/dev/null 2>&1; then
+    printf "${YELLOW}🔐 Docker tidak dapat diakses langsung; mencoba menjalankan cmd-stats dengan doas.${NC}\n"
+    exec doas "$script_path" "$@"
+  fi
+
+  printf "${RED}✘ Docker tidak dapat diakses; daemon mungkin berhenti atau user tidak memiliki izin. Tidak tersedia sudo/doas untuk mencoba akses root.${NC}\n" >&2
+  docker info >&2
+  exit 1
+}
+
+ensure_docker_access "$@"
+
 TARGET="${1:-}"
 if [ "$#" -gt 0 ]; then
   shift
@@ -173,18 +215,41 @@ ncpu=$(nproc)
 
 # --- Ambil Name + PID, filter berdasarkan TARGET ---
 if [ "$TARGET" = "all" ]; then
-  pairs=$(docker inspect -f '{{.Name}}:{{.State.Pid}}' $(docker ps -q) 2>/dev/null | sed 's#^/##')
+  container_ids=$(docker ps -q 2>&1)
+  docker_status=$?
+  if [ "$docker_status" -ne 0 ]; then
+    printf "${RED}✘ Gagal mengambil daftar container dari Docker:${NC}\n%s\n" "$container_ids" >&2
+    exit "$docker_status"
+  fi
+  if [ -z "$container_ids" ]; then
+    printf "${YELLOW}Tidak ada container yang sedang berjalan.${NC}\n"
+    exit 0
+  fi
+  pairs=$(docker inspect -f '{{.Name}}:{{.State.Pid}}' $container_ids 2>&1)
+  docker_status=$?
 else
-  container_id=$(docker ps -q -f "name=^${TARGET}\$")
+  container_id=$(docker ps -q -f "name=^${TARGET}\$" 2>&1)
+  docker_status=$?
+  if [ "$docker_status" -ne 0 ]; then
+    printf "${RED}✘ Gagal mencari container di Docker:${NC}\n%s\n" "$container_id" >&2
+    exit "$docker_status"
+  fi
   if [ -z "$container_id" ]; then
     printf "${RED}✘ Container '%s' tidak ditemukan atau tidak jalan.${NC}\n" "$TARGET"
     exit 1
   fi
-  pairs=$(docker inspect -f '{{.Name}}:{{.State.Pid}}' "$container_id" 2>/dev/null | sed 's#^/##')
+  pairs=$(docker inspect -f '{{.Name}}:{{.State.Pid}}' "$container_id" 2>&1)
+  docker_status=$?
 fi
 
+if [ "$docker_status" -ne 0 ]; then
+  printf "${RED}✘ Gagal membaca informasi container dari Docker:${NC}\n%s\n" "$pairs" >&2
+  exit "$docker_status"
+fi
+pairs=$(printf '%s\n' "$pairs" | sed 's#^/##')
+
 if [ -z "$pairs" ]; then
-  printf "${YELLOW}Tidak ada container yang jalan.${NC}\n"
+  printf "${YELLOW}Tidak ada container yang sedang berjalan.${NC}\n"
   exit 0
 fi
 
